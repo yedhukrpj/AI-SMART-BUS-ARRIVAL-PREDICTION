@@ -1,0 +1,170 @@
+import os
+import asyncio
+import time
+import requests
+from typing import List, Dict, Any
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+# Optional: gtfs-realtime-bindings for parsing protobuf feeds
+try:
+    from google.transit import gtfs_realtime_pb2
+    GTFS_AVAILABLE = True
+except ImportError:
+    GTFS_AVAILABLE = False
+
+# Google GenAI SDK
+from google import genai
+from google.genai import types
+
+load_dotenv()
+
+app = FastAPI(title="SmartTransit AI Backend (Production)")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configuration from Environment Variables
+GTFS_URL = os.getenv("GTFS_REALTIME_URL", "https://api.example.com/gtfs-realtime")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+if not GEMINI_API_KEY:
+    print("WARNING: GEMINI_API_KEY is not set. Chat functionality will fail.")
+
+# Initialize Gemini Client
+try:
+    ai_client = genai.Client(api_key=GEMINI_API_KEY)
+except Exception as e:
+    ai_client = None
+    print(f"Failed to initialize Gemini Client: {e}")
+
+# Global state to hold the latest parsed transit data
+transit_state = {
+    "buses": [],
+    "last_updated": 0
+}
+
+# Generic Route Dictionary mapping Route IDs to display details
+ROUTES = {
+    "R1": {"id": "R1", "name": "Downtown Express", "color": "#06B6D4"},
+    "R2": {"id": "R2", "name": "University Line", "color": "#8B5CF6"},
+    "R3": {"id": "R3", "name": "Airport Shuttle", "color": "#10B981"},
+}
+
+def fetch_and_parse_gtfs():
+    """
+    Fetches actual GTFS Realtime data from a transit authority API.
+    Since we don't have a specific city yet, this is a generic implementation.
+    """
+    if not GTFS_AVAILABLE:
+        print("gtfs-realtime-bindings not installed. Cannot parse feed.")
+        return
+
+    try:
+        response = requests.get(GTFS_URL, timeout=5)
+        if response.status_code == 200:
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(response.content)
+            
+            parsed_buses = []
+            # Extract vehicles from the feed
+            for entity in feed.entity:
+                if entity.HasField('vehicle'):
+                    vehicle = entity.vehicle
+                    # Calculate a mock ETA for UI display purposes based on stop progress, 
+                    # a real app would use the TripUpdate feed for accurate ETAs.
+                    eta = 10
+                    
+                    parsed_buses.append({
+                        "id": str(vehicle.vehicle.id) if vehicle.HasField('vehicle') else "Unknown",
+                        "routeId": str(vehicle.trip.route_id) if vehicle.HasField('trip') else "Unknown",
+                        "location": 50, # In a real map, use vehicle.position.latitude and longitude
+                        "eta": eta,
+                        "status": "on-time",
+                        "aiInsight": "Live tracked vehicle."
+                    })
+            
+            # Update global state
+            transit_state["buses"] = parsed_buses
+            transit_state["last_updated"] = time.time()
+            print(f"Updated live feed with {len(parsed_buses)} vehicles.")
+        else:
+            print(f"Failed to fetch GTFS feed: {response.status_code}")
+    except Exception as e:
+        print(f"Error fetching GTFS feed: {e}")
+
+async def polling_task():
+    """Background task to poll the Transit API periodically."""
+    while True:
+        # We wrap the synchronous request in a thread so it doesn't block FastAPI
+        await asyncio.to_thread(fetch_and_parse_gtfs)
+        await asyncio.sleep(30) # Poll every 30 seconds
+
+@app.on_event("startup")
+async def startup_event():
+    """Start the background polling when the server starts."""
+    asyncio.create_task(polling_task())
+
+# --- API Models ---
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    reply: str
+
+# --- API Endpoints ---
+@app.get("/api/buses")
+async def get_buses():
+    """Returns the real-time state parsed from the API."""
+    # Since this is a template, if we have no buses (e.g. invalid URL), we will return a fallback array 
+    # just so the frontend doesn't crash while you are setting up your actual API.
+    buses = transit_state["buses"]
+    if not buses:
+        buses = [
+            {"id": "DEMO1", "routeId": "R1", "location": 30, "eta": 5, "status": "on-time", "aiInsight": "Demo bus. Add real GTFS URL."}
+        ]
+    
+    return {"buses": buses, "routes": list(ROUTES.values())}
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """Actual LLM endpoint using Google Gemini API."""
+    if not ai_client:
+        raise HTTPException(status_code=500, detail="Gemini API is not configured.")
+
+    buses = transit_state["buses"]
+    
+    # Create context from live bus data to inject into the prompt
+    context = "Current Live Bus Network State:\n"
+    if buses:
+        for b in buses:
+            route = ROUTES.get(b["routeId"], {}).get("name", "Unknown Route")
+            context += f"- Bus {b['id']} on {route} is arriving in {b['eta']} mins. Status: {b['status']}.\n"
+    else:
+        context += "No active buses found in the network at this moment.\n"
+    
+    # Construct the final prompt
+    system_instruction = (
+        "You are a helpful Transit AI Assistant. Use the provided real-time "
+        "bus network state to accurately answer the user's questions about ETAs, "
+        "delays, and routes. Keep answers concise."
+    )
+    
+    prompt = f"System: {system_instruction}\n\nContext:\n{context}\n\nUser Question: {request.message}"
+
+    try:
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return ChatResponse(reply=response.text)
+    except Exception as e:
+        print(f"LLM Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to communicate with LLM.")
