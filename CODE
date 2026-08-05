@@ -168,3 +168,304 @@ async def chat(request: ChatRequest):
     except Exception as e:
         print(f"LLM Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to communicate with LLM.")
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Smart Bus Prediction</title>
+    
+    <!-- Google Fonts for premium typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <link rel="stylesheet" href="styles.css">
+    
+    <!-- React & ReactDOM (Development version for standalone execution) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel for in-browser JSX parsing -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const BACKEND_URL = "http://localhost:8000";
+
+// --- Components ---
+
+const ArrivalBoard = ({ buses, routes }) => {
+  // Sort buses by ETA
+  const sortedBuses = [...buses].sort((a, b) => a.eta - b.eta);
+
+  return (
+    <div className="glass-panel arrival-board h-full">
+      <div className="board-header">
+        <h2>Live Departures</h2>
+        <p className="text-secondary text-sm">AI-adjusted real-time estimates</p>
+      </div>
+      <div className="board-content">
+        {sortedBuses.map(bus => {
+          const route = routes.find(r => r.id === bus.routeId) || { name: 'Unknown', color: '#64748B' };
+          return (
+            <div key={bus.id} className="bus-card">
+              <div className="bus-card-header">
+                <span className="route-badge" style={{ color: route.color, borderColor: route.color, backgroundColor: `${route.color}20` }}>
+                  {route.name}
+                </span>
+                <span className="text-secondary text-sm">Bus {bus.id}</span>
+              </div>
+              <div className="flex justify-between items-end mt-2">
+                <div className="bus-details">
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <i data-lucide="map-pin" style={{ width: '14px', height: '14px' }}></i>
+                    Approaching Stop
+                  </span>
+                </div>
+                <div className="eta-display">
+                  <div className={`eta-time ${bus.status}`}>
+                    {bus.eta}
+                    <span style={{ fontSize: '1rem', marginLeft: '2px' }}>m</span>
+                  </div>
+                  <div className="eta-label">Expected</div>
+                </div>
+              </div>
+              {bus.aiInsight && (
+                <div className="ai-insight">
+                  <i data-lucide="sparkles" className="ai-icon" style={{ width: '14px', height: '14px' }}></i>
+                  <span>{bus.aiInsight}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+const BusMap = ({ buses, routes }) => {
+  return (
+    <div className="glass-panel map-section h-full">
+      <div className="map-bg"></div>
+      <div className="map-grid"></div>
+      
+      <div className="map-content">
+        {/* Decorative Route Lines */}
+        <div className="sim-route-line" style={{ top: '30%', left: '10%', width: '80%', height: '4px', background: 'rgba(6, 182, 212, 0.2)' }}></div>
+        <div className="sim-route-line" style={{ top: '60%', left: '10%', width: '80%', height: '4px', background: 'rgba(139, 92, 246, 0.2)' }}></div>
+        <div className="sim-route-line" style={{ left: '50%', top: '10%', height: '80%', width: '4px', background: 'rgba(16, 185, 129, 0.2)' }}></div>
+        
+        {/* Live Bus Markers */}
+        {buses.map(bus => {
+          const route = routes.find(r => r.id === bus.routeId) || { name: 'Unknown', color: '#64748B' };
+          
+          // Map mapping logic based on location percentage (0-100)
+          let top = '50%';
+          let left = '50%';
+          
+          if (bus.routeId === 'R1') {
+            top = '30%';
+            left = `${bus.location}%`;
+          } else if (bus.routeId === 'R2') {
+            top = '60%';
+            left = `${100 - bus.location}%`;
+          } else if (bus.routeId === 'R3') {
+            left = '50%';
+            top = `${bus.location}%`;
+          }
+
+          return (
+            <div 
+              key={bus.id} 
+              className="sim-bus-marker"
+              style={{ 
+                top, 
+                left,
+                borderColor: route.color,
+                boxShadow: `0 0 15px ${route.color}60`
+              }}
+              title={`${route.name} - ETA: ${bus.eta}m`}
+            >
+              <i data-lucide="bus" style={{ width: '12px', height: '12px', color: '#fff' }}></i>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Floating Status Badge */}
+      <div style={{ position: 'absolute', top: '20px', left: '20px', background: 'rgba(0,0,0,0.5)', padding: '8px 12px', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid rgba(255,255,255,0.1)', backdropFilter: 'blur(5px)' }}>
+        <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-green)', boxShadow: '0 0 8px var(--accent-green)' }}></div>
+        <span style={{ fontSize: '0.8rem', fontWeight: '500' }}>Live Network Data</span>
+      </div>
+    </div>
+  );
+};
+
+const AIChat = () => {
+  const [messages, setMessages] = useState([
+    { id: 1, text: "Hello! I'm analyzing real-time traffic and transit data from the live API. How can I help you plan your journey today?", sender: 'ai' }
+  ]);
+  const [input, setInput] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isTyping]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+
+    const userMsg = input.trim();
+    setMessages(prev => [...prev, { id: Date.now(), text: userMsg, sender: 'user' }]);
+    setInput('');
+    setIsTyping(true);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMsg })
+      });
+      
+      if (!response.ok) throw new Error("API Error");
+      
+      const data = await response.json();
+      setMessages(prev => [...prev, { id: Date.now() + 1, text: data.reply, sender: 'ai' }]);
+    } catch (error) {
+      setMessages(prev => [...prev, { id: Date.now() + 1, text: "Sorry, I couldn't reach the AI service. Please ensure the backend is running.", sender: 'ai' }]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  return (
+    <div className="glass-panel chat-section h-full">
+      <div className="chat-header">
+        <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-purple), var(--accent-cyan))', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <i data-lucide="sparkles" style={{ width: '16px', height: '16px', color: '#fff' }}></i>
+        </div>
+        <div>
+          <h3 style={{ margin: 0, fontSize: '1.1rem' }}>Transit AI</h3>
+          <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Powered by Gemini API</p>
+        </div>
+      </div>
+      
+      <div className="chat-messages">
+        {messages.map(msg => (
+          <div key={msg.id} className={`message ${msg.sender}`}>
+            {msg.text}
+          </div>
+        ))}
+        {isTyping && (
+          <div className="typing-indicator">
+            <div className="typing-dot"></div>
+            <div className="typing-dot"></div>
+            <div className="typing-dot"></div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="chat-input-area">
+        <form className="chat-form" onSubmit={handleSubmit}>
+          <input 
+            type="text" 
+            className="chat-input" 
+            placeholder="Ask about delays, ETAs..." 
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+          />
+          <button type="submit" className="chat-submit" disabled={!input.trim() || isTyping}>
+            <i data-lucide="send" style={{ width: '18px', height: '18px', marginLeft: '-2px' }}></i>
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// --- Main App Component ---
+const App = () => {
+  const [buses, setBuses] = useState([]);
+  const [routes, setRoutes] = useState([]);
+  const [error, setError] = useState(false);
+
+  // Initialize Lucide icons
+  useEffect(() => {
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+  });
+
+  // Fetch live bus data from the FastAPI Backend
+  useEffect(() => {
+    const fetchBuses = async () => {
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/buses`);
+        if (!response.ok) throw new Error("Failed to fetch");
+        
+        const data = await response.json();
+        setBuses(data.buses);
+        setRoutes(data.routes);
+        setError(false);
+      } catch (err) {
+        console.error("Error fetching live buses:", err);
+        setError(true);
+      }
+    };
+
+    // Fetch immediately on mount
+    fetchBuses();
+
+    // Poll every 5 seconds
+    const interval = setInterval(fetchBuses, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="app-container">
+      <aside className="left-panel">
+        <div className="brand">
+          <div className="brand-icon">
+            <i data-lucide="bus-front"></i>
+          </div>
+          <h1>SmartTransit AI</h1>
+        </div>
+        {error && (
+            <div style={{background: 'rgba(239, 68, 68, 0.2)', border: '1px solid var(--accent-red)', color: 'white', padding: '10px', borderRadius: '8px', marginBottom: '16px', fontSize: '0.9rem'}}>
+                <strong>Backend disconnected.</strong> Please run the FastAPI server at localhost:8000.
+            </div>
+        )}
+        <ArrivalBoard buses={buses} routes={routes} />
+      </aside>
+      
+      <main className="center-panel">
+        <BusMap buses={buses} routes={routes} />
+      </main>
+      
+      <aside className="right-panel">
+        <AIChat />
+      </aside>
+    </div>
+  );
+};
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+    </script>
+</body>
+</html>
